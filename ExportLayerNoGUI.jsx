@@ -19,6 +19,9 @@
 // enable double-clicking from Finder/Explorer (CS2 and higher)
 #target photoshop
 
+// Include JSON support
+#include "json2.js"
+
 app.bringToFront();
 
 //
@@ -165,25 +168,27 @@ var selectedLayerCount = 0;
 //
 // Entry point
 //
-
-bootstrap();
+var outputArgument = arguments[0];
+// var outputArgument = "/Users/jedlankitus/Library/Application\ Support/MythicalGames/MythicalStudio/AssetPipeline/Build/Blankos/Intermediate/Loose/Textures/Jed/";
+bootstrap(outputArgument);
 
 //
 // Processing logic
 //
 
-function main() {
+function main(outputPathString) {
+
     // user preferences
     prefs = new Object();
     prefs.format = "";
-    prefs.fileExtension = "";
+    prefs.fileExtension = ".png";
     try {
-        prefs.filePath = app.activeDocument.path;
+        prefs.filePath = outputPathString;
     } catch (e) {
         prefs.filePath = Folder.myDocuments;
     }
     prefs.formatArgs = null;
-    prefs.exportLayerTarget = ExportLayerTarget.ALL_LAYERS;
+    prefs.exportLayerTarget = ExportLayerTarget.VISIBLE_LAYERS;
     prefs.outputPrefix = "";
     prefs.outputSuffix = "";
     prefs.naming = FileNameType.AS_LAYERS_NO_EXT;
@@ -196,7 +201,7 @@ function main() {
     prefs.scale = false;
     prefs.scaleValue = 100;
     prefs.forceTrimMethod = false;
-    prefs.groupsAsFolders = true;
+    prefs.groupsAsFolders = false;
     prefs.overwrite = false;
     prefs.padding = false;
     prefs.paddingValue = 1;
@@ -225,65 +230,199 @@ function main() {
         alert("Layers counted in " + profiler.format(countDuration), "Debug info");
     }
 
-    // show dialogue
+    triggerExport(profiler, progressBarWindow);
+    /*
+    triggerExport(profiler, progressBarWindow);
     if (showDialog() === 1) {
-        env.documentCopy = app.activeDocument.duplicate();
-
-        // collect layers
-        profiler.resetLastTime();
-        if (prefs.topGroupAsLayer) {
-            mergeTopGroups(app.activeDocument);
-        }
-        var collected = collectLayers(progressBarWindow);
-        if (userCancelled) {
-            alert("Export cancelled! No files saved.", "Finished", false);
-            return "cancel";
-        }
-        layers = collected.layers;
-        visibleLayers = collected.visibleLayers;
-        selectedLayers = collected.selectedLayers;
-        groups = collected.groups;
-        var collectionDuration = profiler.getDuration(true, true);
-        if (env.profiling) {
-            alert("Layers collected in " + profiler.format(collectionDuration), "Debug info");
-        }
-
-        // create unique folders
-
-        var foldersOk = !prefs.groupsAsFolders;
-        if (prefs.groupsAsFolders) {
-            foldersOk = createUniqueFolders(prefs.exportLayerTarget);
-            if (foldersOk !== true) {
-                alert(foldersOk + " Not exporting layers.", "Failed", true);
-            }
-        }
-
-        // export
-        if (foldersOk === true) {
-            profiler.resetLastTime();
-
-            var count = exportLayers(prefs.exportLayerTarget, progressBarWindow);
-            var exportDuration = profiler.getDuration(true, true);
-
-            var message = "";
-            if (userCancelled) {
-                message += "Export cancelled!\n\n";
-            }
-            message += "Saved " + count.count + " files.";
-            if (env.profiling) {
-                message += "\n\nExport function took " + profiler.format(collectionDuration) + " + " + profiler.format(exportDuration) + " to perform.";
-            }
-            if (count.error) {
-                message += "\n\nSome layers failed to export! (Are there many layers with the same name?)";
-            }
-            alert(message, "Finished", count.error);
-        }
-
-        app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);
-        env.documentCopy = null;
+        triggerExport(profiler, progressBarWindow);
     } else {
         return "cancel";
     }
+    */
+}
+
+function cTID(s) {
+    return app.charIDToTypeID(s);
+};
+
+function sTID(s) {
+    return app.stringIDToTypeID(s);
+};
+
+function getLayerDescriptor(doc, layer) {
+
+    var ref = new ActionReference();
+    ref.putEnumerated(cTID("Lyr "), cTID("Ordn"), cTID("Trgt"));
+    return executeActionGet(ref)
+};
+
+function printLayerDescriptorKeyPairs(desc) {
+    var str = '';
+    for (var i = 0; i < desc.count; i++) {
+        str = getKeyString(desc, i);
+        alert(str);
+    }
+}
+
+function getKeyString(d, index) {
+    return (app.typeIDToStringID(d.getKey(index)) + ':' + d.getType(d.getKey(index)) + '\n');
+}
+
+// Currently unused, TODO remove
+function getLayerColourLabelByID(ID) {
+
+    var ref = new ActionReference();
+    ref.putProperty(charIDToTypeID("Prpr"), stringIDToTypeID('color'));
+    ref.putIdentifier(charIDToTypeID("Lyr "), ID);
+    var actionDescriptor = executeActionGet(ref);
+    var color = actionDescriptor.getEnumerationValue(app.stringIDToTypeID('color'));
+    // var objRGBColor = actionDescriptor.getObjectValue(stringIDToTypeID('color'));
+    var colorString = app.typeIDToStringID(color);
+    return colorString;
+};
+
+// Custom Helper function for ExtendScript (Adobe CEP) created as an alternative since JavaScript Object(keys) method does not work
+
+function getKeysWithoutObjectKeysSupport(associativeArrayObject) {
+    var arrayWithKeys = [], associativeArrayObject;
+    for (var key in associativeArrayObject) {
+        // Avoid returning these keys from the Associative Array that are stored in it for some reason
+        if (key !== undefined && key !== "toJSONString" && key !== "parseJSON") {
+            arrayWithKeys.push(key);
+        }
+    }
+    return arrayWithKeys;
+}
+
+// Returns comma separated RGB values for each layer
+// TODO: why do some layers have no adjustment layer?
+function getAdjustmentLayerColor(doc, layer) {
+
+    // alert(app.activeDocument.activeLayer.kind);
+    var desc = getLayerDescriptor(doc, layer);
+
+    try {
+        var adjs = desc.getList(cTID('Adjs'));
+        var clrDesc = adjs.getObjectValue(0);
+        var color = clrDesc.getObjectValue(cTID('Clr '));
+
+        var red = Math.round(color.getDouble(cTID('Rd  ')));
+        var green = Math.round(color.getDouble(cTID('Grn ')));
+        var blue = Math.round(color.getDouble(cTID('Bl  ')));
+    }
+    catch (err) {
+        alert("no adjustment layer on " + layer);
+    }
+    return red + ", " + green + ", " + blue;
+};
+
+function triggerExport(profiler, progressBarWindow) {
+    env.documentCopy = app.activeDocument.duplicate();
+
+    // collect layers
+    profiler.resetLastTime();
+    if (prefs.topGroupAsLayer) {
+        mergeTopGroups(app.activeDocument);
+    }
+
+    var collected = collectLayers(progressBarWindow);
+    if (userCancelled) {
+        alert("Export cancelled! No files saved.", "Finished", false);
+        return "cancel";
+    }
+
+    // Gather both layers, and visible layers.
+    // We only use visible layers, TODO: remove layers code
+    layers = collected.layers;
+    visibleLayers = collected.visibleLayers;
+
+    // Create rgb / layer relationship object
+    var rgbLayerDict = {};
+
+    // For each visible layer, write the layer name and rgb values as json file
+    for (var i = 0; i < visibleLayers.length; i++) {
+        var doc = app.activeDocument;
+        doc.activeLayer = visibleLayers[i].layer;
+        try {
+            var rgb = getAdjustmentLayerColor(app.activeDocument, doc.activeLayer.name);
+            if (rgbLayerDict[visibleLayers[i].layer.name] != null) {
+                alert("DUPLICATE LAYER NAME ERROR, RENAME LAYER TO BE UNIQUE!");
+            }
+            rgbLayerDict[visibleLayers[i].layer.name] = rgb;
+        }
+        catch (err) {
+            alert("layer " + visibleLayers[i].layer.name + " has no rgb values...");
+        }
+    }
+
+    // Write the json to file
+    // Clean up name (no .psd, no copy)
+    var docNameNoPsd = doc.name.replace(".psd", "");
+    docNameNoPsd = docNameNoPsd.replace(" copy", "");
+
+    var jsonFile = File(prefs.filePath + docNameNoPsd + ".json");
+    if (!jsonFile.exists) {
+        jsonFile.open("w");
+        // alert("about to stringify");
+        jsonFile.write(JSON.stringify(rgbLayerDict));
+        jsonFile.close;
+    }
+
+    selectedLayers = collected.selectedLayers;
+    groups = collected.groups;
+
+    var groupNames = [];
+    for (var i = 0; i < groups.length; i++) {
+        groupNames[i] = getGroupName(groups[i]);
+    }
+
+    var groupsJsonFile = File(prefs.filePath + docNameNoPsd + "_GROUPS" + ".json");
+    if (!groupsJsonFile.exists) {
+        groupsJsonFile.open("w");
+        // alert("about to stringify");
+        groupsJsonFile.write(JSON.stringify(groupNames));
+        groupsJsonFile.close;
+    }
+
+    var collectionDuration = profiler.getDuration(true, true);
+    if (env.profiling) {
+        alert("Layers collected in " + profiler.format(collectionDuration), "Debug info");
+    }
+
+    // create unique folders
+    var foldersOk = !prefs.groupsAsFolders;
+    if (prefs.groupsAsFolders) {
+        foldersOk = createUniqueFolders(prefs.exportLayerTarget);
+        if (foldersOk !== true) {
+            alert(foldersOk + " Not exporting layers.", "Failed", true);
+        }
+    }
+
+    // export
+    if (foldersOk === true) {
+        profiler.resetLastTime();
+
+        prefs.exportLayerTarget = ExportLayerTarget.VISIBLE_LAYERS;
+        var count = exportLayers(prefs.exportLayerTarget, progressBarWindow);
+        var exportDuration = profiler.getDuration(true, true);
+
+        var message = "";
+        if (userCancelled) {
+            message += "Export cancelled!\n\n";
+        }
+        message += "Saved " + count.count + " files.";
+        if (env.profiling) {
+            message += "\n\nExport function took " + profiler.format(collectionDuration) + " + " + profiler.format(exportDuration) + " to perform.";
+        }
+        if (count.error) {
+            message += "\n\nSome layers failed to export! (Are there many layers with the same name?)";
+        }
+        // alert(message, "Finished", count.error);
+    }
+
+    // app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);
+    env.documentCopy.close(SaveOptions.DONOTSAVECHANGES);
+    env.documentCopy = null;
 }
 
 function exportLayers(exportLayerTarget, progressBarWindow) {
@@ -571,7 +710,7 @@ function createUniqueFolders(exportLayerTarget) {
             if (folder.exists && !prefs.overwrite) {
                 var renamed = false;
                 for (var j = 1; j <= 100; ++j) {
-                    var handle = new Folder(path + "-" + padder(j, 3));
+                    var handle = new Folder(path + "_" + padder(j, 3));
                     if (!handle.exists) {
                         try {
                             renamed = folder.rename(handle.name);
@@ -614,11 +753,15 @@ function saveImage(fileName) {
                 break;
 
             default:
-                app.activeDocument.exportDocument(fileName, ExportType.SAVEFORWEB, prefs.formatArgs);
+                // app.activeDocument.exportDocument(fileName, ExportType.SAVEFORWEB, prefs.formatArgs);
+                exportPng24AM(fileName, prefs.formatArgs);
                 break;
         }
-    } else {
-        app.activeDocument.saveAs(fileName, prefs.formatArgs, true, LetterCase.toExtensionType(prefs.namingLetterCase));
+    }
+    else {
+        // This is what is actually called, TODO cleanup
+        var png24Prefs = SetPNG24ExportSettings(prefs);
+        exportPng24AM(fileName, png24Prefs.formatArgs);
     }
 
     return true;
@@ -635,12 +778,22 @@ function makeFolderName(group) {
     return folderName;
 }
 
+function getGroupName(group) {
+    var groupName = makeValidFileName(group.layer.name, prefs.replaceSpaces);
+    if (groupName.length == 0) {
+        groupName = "Group";
+    }
+
+    return groupName;
+}
+
 function makeFileNameFromIndex(index, numOfDigits, layer) {
     var fileName = "" + padder(index, numOfDigits);
     return getUniqueFileName(fileName, layer);
 }
 
 function makeFileNameFromLayerName(layer, stripExt) {
+
     var fileName = makeValidFileName(layer.layer.name, prefs.replaceSpaces);
     if (stripExt) {
         var dotIdx = fileName.indexOf('.');
@@ -655,6 +808,7 @@ function makeFileNameFromLayerName(layer, stripExt) {
 }
 
 function getUniqueFileName(fileName, layer) {
+
     var ext = prefs.fileExtension;
     // makeValidFileName() here basically just converts the space between the prefix, the core file name and suffix,
     // but it's a good idea to keep file naming conventions in one place, i.e. inside makeValidFileName(),
@@ -671,6 +825,7 @@ function getUniqueFileName(fileName, layer) {
     }
 
     var localFolders = "";
+
     if (prefs.groupsAsFolders) {
         var parent = layer.parent;
         while (parent) {
@@ -697,21 +852,39 @@ function getUniqueFileName(fileName, layer) {
             localFolders = topGroup.name + "/";
         }
     }
+    // TODO: clean up code, this else should be the only option
+    else {
+        localFolders = layer.parent.layer.name;
+    }
 
-    fileName = prefs.filePath + "/" + localFolders + fileName;
+    // TODO: filename fixing here!
+    localFolders = localFolders.replace(/[ ]/g, prefs.delimiter);
+    fileName = convertFilenameToBlankoFormat(fileName, localFolders);
 
     // Check if the file already exists. In such case a numeric suffix will be added to disambiguate.
     var uniqueName = fileName;
     for (var i = 1; i <= 100; ++i) {
         var handle = File(uniqueName + ext);
         if (handle.exists && !prefs.overwrite) {
-            uniqueName = fileName + "-" + padder(i, 3);
+            uniqueName = fileName + "_" + padder(i, 1) + ext;
         } else {
             return handle;
         }
     }
 
+    if (!uniqueName.includes(ext)) {
+        alert("no png!");
+        uniqueName = uniqueName + ext;
+    }
     return false;
+}
+// TODO remove .psd here
+function convertFilenameToBlankoFormat(fileName, localFolders) {
+    fileName = app.activeDocument.name + "_" + localFolders + "_" + fileName;
+    fileName = fileName.replace(".psd", "");
+    fileName = prefs.filePath + "/" + fileName;
+    fileName = fileName.replace(" copy", "");
+    return fileName.toLowerCase();
 }
 
 function mergeTopGroups(doc) {
@@ -1645,6 +1818,37 @@ function getFormatOptsPNG24() {
     };
 }
 
+function SetPNG24ExportSettings(prefs, parent) {
+    prefs.format = "PNG-24";
+    prefs.fileExtension = ".png";
+
+    var WHITE = new RGBColor();
+    WHITE.red = 255;
+    WHITE.green = 255;
+    WHITE.blue = 255;
+    var BLACK = new RGBColor();
+    BLACK.red = 0;
+    BLACK.green = 0;
+    BLACK.blue = 0;
+    var GRAY = new RGBColor();
+    GRAY.red = 127;
+    GRAY.green = 127;
+    GRAY.blue = 127;
+
+    var matteColors = [WHITE, BLACK, GRAY, BLACK, app.backgroundColor.rgb, app.foregroundColor.rgb];
+
+    prefs.formatArgs = new ExportOptionsSaveForWeb();
+    with (prefs.formatArgs) {
+        format = SaveDocumentType.PNG;
+        PNG8 = false;
+        interlaced = false;
+        transparency = true;
+        matteColor = WHITE;
+    }
+
+    return prefs;
+}
+
 function getFormatOptsPNG8() {
     return {
         type: "PNG-8",
@@ -1986,10 +2190,7 @@ function getFormatOptsBMP() {
 // Bootstrapper (version support, getting additional environment settings, error handling...)
 //
 
-function bootstrap() {
-    function showError(err) {
-        alert(err + ': on line ' + err.line, 'Script Error', true);
-    }
+function bootstrap(outputPath) {
 
     // initialisation of class methods
     defineProfilerMethods();
@@ -2036,9 +2237,9 @@ function bootstrap() {
         // run the script itself
         if (env.cs3OrHigher) {
             // suspend history for CS3 or higher
-            app.activeDocument.suspendHistory('Export Layers To Files', 'main()');
+            app.activeDocument.suspendHistory('Export Layers To Files', 'main(outputPath)');
         } else {
-            main();
+            main(outputPath);
         }
 
         if (env.documentCopy) {
@@ -2046,7 +2247,7 @@ function bootstrap() {
         }
     } catch (e) {
         // report errors unless the user cancelled
-        if (e.number != 8007) showError(e);
+        if (e.number != 8007) alert(e);
         if (env.documentCopy) {
             env.documentCopy.close(SaveOptions.DONOTSAVECHANGES);
         }
